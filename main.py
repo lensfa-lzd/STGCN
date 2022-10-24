@@ -192,20 +192,22 @@ def train(loss, args, optimizer, model, train_iter, val_iter, zscore):
                              % (l_sum / (batch_idx + 1), mae, mape, rmse))
 
         print()
-        val_loss, val_mae = evaluation(model, val_iter, zscore, type='validation')
-
-        if args.enable_nni:
-            nni.report_intermediate_result(val_mae)
-            if val_mae <= best_point:
-                best_point = val_mae
+        val_loss, val_mae = evaluation(model, val_iter, zscore, args, type='validation')
+        nni.report_intermediate_result(val_mae)
 
     if args.enable_nni:
-        nni.report_final_result(best_point)
+        test_loss, test_mae = evaluation(model, val_iter, zscore, args, type='test')
+        nni.report_final_result(test_mae)
 
 
-def evaluation(model, iter, zscore, type):
+def evaluation(model, iter, zscore, args, type, saved=True):
     model.eval()
     l_sum, mae_sum = 0.0, 0.0
+
+    if type == 'test':
+        checkpoint = torch.load('./checkpoint/ckpt.pth')
+        model.load_state_dict(checkpoint['net'])
+
     with torch.no_grad():
         for batch_idx, (x, y) in enumerate(iter):
             y_pred = model(x)
@@ -216,10 +218,30 @@ def evaluation(model, iter, zscore, type):
             mae, mape, rmse = calc_metric(y, y_pred, zscore)
             mae_sum += mae
             if batch_idx % 50 == 0:
-                progress_bar(batch_idx, len(iter), 'Test loss: %.3f | mae, mape, rmse: %.3f, %.1f%%, %.3f'
+                progress_bar(batch_idx, len(iter), str(type) + ' loss: %.3f | mae, mape, rmse: %.3f, %.1f%%, %.3f'
                              % (l_sum / (batch_idx + 1), mae, mape, rmse))
         print()
-    return l_sum / len(iter), mae_sum / len(iter)
+        val_loss_calc = mae_sum / len(iter)
+        try:
+            checkpoint = torch.load('./checkpoint/ckpt.pth')
+            val_loss = checkpoint['val_lost(mae)']
+            if val_loss_calc < val_loss:
+                save_model(args, model, val_loss_calc)
+        except:
+            save_model(args, model, val_loss)
+
+    return l_sum / len(iter), val_loss_calc
+
+
+def save_model(args, model, val_loss):
+    checkpoint = {
+        'config_args': args,
+        'net': model.state_dict(),
+        'val_loss(mae)': val_loss,
+    }
+    if not os.path.isdir('checkpoint'):
+        os.mkdir('checkpoint')
+    torch.save(checkpoint, './checkpoint/ckpt.pth')
 
 
 if __name__ == '__main__':
