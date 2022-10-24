@@ -3,6 +3,7 @@ import scipy.sparse as sp
 from scipy.sparse.linalg import eigsh
 import torch
 
+
 def calc_gso(dir_adj, gso_type):
     n_vertex = dir_adj.shape[0]
 
@@ -14,49 +15,33 @@ def calc_gso(dir_adj, gso_type):
     id = sp.identity(n_vertex, format='csc')
 
     # Symmetrizing an adjacency matrix
+    # makes difference when adj is directed, used to average the different value between (i->j) and (j->i)
+    # but in this case (data in the data folder) all the adjs are undirected, so you can take adj = dir_adj
     adj = dir_adj + dir_adj.T.multiply(dir_adj.T > dir_adj) - dir_adj.multiply(dir_adj.T > dir_adj)
-    #adj = 0.5 * (dir_adj + dir_adj.transpose())
-    
-    if gso_type == 'sym_renorm_adj' or gso_type == 'rw_renorm_adj' \
-        or gso_type == 'sym_renorm_lap' or gso_type == 'rw_renorm_lap':
+
+    if gso_type == 'sym_renorm_adj':
+        # Adding self-connection
         adj = adj + id
-    
-    if gso_type == 'sym_norm_adj' or gso_type == 'sym_renorm_adj' \
-        or gso_type == 'sym_norm_lap' or gso_type == 'sym_renorm_lap':
-        row_sum = adj.sum(axis=1).A1
-        row_sum_inv_sqrt = np.power(row_sum, -0.5)
-        row_sum_inv_sqrt[np.isinf(row_sum_inv_sqrt)] = 0.
-        deg_inv_sqrt = sp.diags(row_sum_inv_sqrt, format='csc')
-        # A_{sym} = D^{-0.5} * A * D^{-0.5}
-        sym_norm_adj = deg_inv_sqrt.dot(adj).dot(deg_inv_sqrt)
 
-        if gso_type == 'sym_norm_lap' or gso_type == 'sym_renorm_lap':
-            sym_norm_lap = id - sym_norm_adj
-            gso = sym_norm_lap
-        else:
-            gso = sym_norm_adj
+    row_sum = adj.sum(axis=1).A1
+    row_sum_inv_sqrt = np.power(row_sum, -0.5)
+    row_sum_inv_sqrt[np.isinf(row_sum_inv_sqrt)] = 0.
+    deg_inv_sqrt = sp.diags(row_sum_inv_sqrt, format='csc')
 
-    elif gso_type == 'rw_norm_adj' or gso_type == 'rw_renorm_adj' \
-        or gso_type == 'rw_norm_lap' or gso_type == 'rw_renorm_lap':
-        row_sum = np.sum(adj, axis=1).A1
-        row_sum_inv = np.power(row_sum, -1)
-        row_sum_inv[np.isinf(row_sum_inv)] = 0.
-        deg_inv = np.diag(row_sum_inv)
-        # A_{rw} = D^{-1} * A
-        rw_norm_adj = deg_inv.dot(adj)
+    # A_{sym} = D^{-0.5} * A * D^{-0.5}
+    sym_norm_adj = deg_inv_sqrt.dot(adj).dot(deg_inv_sqrt)
 
-        if gso_type == 'rw_norm_lap' or gso_type == 'rw_renorm_lap':
-            rw_norm_lap = id - rw_norm_adj
-            gso = rw_norm_lap
-        else:
-            gso = rw_norm_adj
-
+    if gso_type == 'sym_norm_lap':
+        sym_norm_lap = id - sym_norm_adj
+        gso = calc_chebynet_gso(sym_norm_lap)
     else:
-        raise ValueError(f'{gso_type} is not defined.')
+        gso = sym_norm_adj
 
     return gso
 
+
 def calc_chebynet_gso(gso):
+    # rescale operation in Chebyshev Polynomials Approximation
     if sp.issparse(gso) == False:
         gso = sp.csc_matrix(gso)
     elif gso.format != 'csc':
@@ -65,56 +50,38 @@ def calc_chebynet_gso(gso):
     id = sp.identity(gso.shape[0], format='csc')
     eigval_max = max(eigsh(A=gso, k=6, which='LM', return_eigenvectors=False))
 
-    # If the gso is symmetric or random walk normalized Laplacian,
-    # then the maximum eigenvalue is smaller than or equals to 2.
-    if eigval_max >= 2:
-        gso = gso - id
-    else:
-        gso = 2 * gso / eigval_max - id
+    gso = 2 * gso / eigval_max - id
 
     return gso
 
-def cnv_sparse_mat_to_coo_tensor(sp_mat, device):
-    # convert a compressed sparse row (csr) or compressed sparse column (csc) matrix to a hybrid sparse coo tensor
-    sp_coo_mat = sp_mat.tocoo()
-    i = torch.from_numpy(np.vstack((sp_coo_mat.row, sp_coo_mat.col)))
-    v = torch.from_numpy(sp_coo_mat.data)
-    s = torch.Size(sp_coo_mat.shape)
 
-    if sp_mat.dtype == np.float32 or sp_mat.dtype == np.float64:
-        return torch.sparse_coo_tensor(indices=i, values=v, size=s, dtype=torch.float32, device=device, requires_grad=False)
-    else:
-        raise TypeError(f'ERROR: The dtype of {sp_mat} is {sp_mat.dtype}, not been applied in implemented models.')
+def calc_metric(y, y_pred, zscore):
+    """
+        size of y/y_pred [batch_size, n_pred, n_vertex]
+    """
+    y, y_pred = y.detach().cpu().numpy(), y_pred.detach().cpu().numpy()
 
-def evaluate_model(model, loss, data_iter):
-    model.eval()
-    l_sum, n = 0.0, 0
-    with torch.no_grad():
-        for x, y in data_iter:
-            y_pred = model(x).view(len(x), -1)
-            l = loss(y_pred, y)
-            l_sum += l.item() * y.shape[0]
-            n += y.shape[0]
-        mse = l_sum / n
-        
-        return mse
+    y = zscore.inverse_transform(y).reshape(-1)
+    y_pred = zscore.inverse_transform(y_pred).reshape(-1)
 
-def evaluate_metric(model, data_iter, scaler):
-    model.eval()
-    with torch.no_grad():
-        mae, sum_y, mape, mse = [], [], [], []
-        for x, y in data_iter:
-            y = scaler.inverse_transform(y.cpu().numpy()).reshape(-1)
-            y_pred = scaler.inverse_transform(model(x).view(len(x), -1).cpu().numpy()).reshape(-1)
-            d = np.abs(y - y_pred)
-            mae += d.tolist()
-            sum_y += y.tolist()
-            mape += (d / y).tolist()
-            mse += (d ** 2).tolist()
-        MAE = np.array(mae).mean()
-        #MAPE = np.array(mape).mean()
-        RMSE = np.sqrt(np.array(mse).mean())
-        WMAPE = np.sum(np.array(mae)) / np.sum(np.array(sum_y))
+    diff = np.abs(y - y_pred)
+    mae = np.mean(diff)
+    mape = np.mean(diff / y) * 100
+    mse = diff * diff
+    rmse = np.sqrt(np.mean(mse))
 
-        #return MAE, MAPE, RMSE
-        return MAE, RMSE, WMAPE
+    return mae, mape, rmse
+
+
+def evaluate_metric(y, y_pred, zscore):
+    """
+        size of y/y_pred [batch_size, n_pred, n_vertex]
+    """
+    y, y_pred = y.cpu().numpy(), y_pred.cpu().numpy()
+    y = zscore.inverse_transform(y).reshape(-1)
+    y_pred = zscore.inverse_transform(y_pred).reshape(-1)
+
+    # diff =
+
+
+
