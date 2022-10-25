@@ -205,7 +205,7 @@ def evaluation(model, iter, zscore, args, type, saved=True):
     l_sum, mae_sum = 0.0, 0.0
 
     if type == 'test':
-        checkpoint = torch.load('./checkpoint/ckpt.pth')
+        checkpoint = torch.load('./checkpoint/ckpt.pth', map_location='cpu')
         model.load_state_dict(checkpoint['net'])
 
     with torch.no_grad():
