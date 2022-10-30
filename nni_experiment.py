@@ -19,15 +19,16 @@ experiment.config.search_space = search_space
 # Configure tuning algorithm
 # ^^^^^^^^^^^^^^^^^^^^^^^^^^
 # Here we use :doc:`TPE tuner </hpo/tuners>`.
-experiment.config.tuner.name = 'TPE'
+experiment.config.tuner.name = 'Evolution'
 experiment.config.tuner.class_args['optimize_mode'] = 'minimize'
+experiment.config.tuner.class_args['population_size'] = 36
 
 # %%
 # Configure how many trials to run
 # ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 # Here we evaluate 10 sets of hyperparameters in total, and concurrently evaluate 2 sets at a time.
-experiment.config.max_trial_number = 10
-experiment.config.trial_concurrency = 1
+experiment.config.max_trial_number = 100
+experiment.config.trial_concurrency = 4
 experiment.config.trial_gpu_number = 1
 
 experiment.config.training_service.use_active_gpu = True

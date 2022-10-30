@@ -7,12 +7,11 @@ import nni
 import numpy as np
 import pandas as pd
 import torch
-from sklearn.preprocessing import StandardScaler
 from torch import nn, optim
 from torch.utils.data import TensorDataset, DataLoader
 
 from script.dataloader import load_adj, load_data, data_transform
-from script.utility import calc_gso, calc_metric
+from script.utility import calc_gso, calc_metric, StandardScaler, MAELoss
 from script.visualize import progress_bar
 from model.model import STGCN
 
@@ -21,7 +20,7 @@ def get_parameters():
     parser = argparse.ArgumentParser(description='STGCN')
     parser.add_argument('--enable_cuda', type=bool, default=True, help='enable CUDA, default as True')
     parser.add_argument('--enable_nni', type=bool, default=False, help='enable nni experiment')
-    parser.add_argument('--dataset', type=str, default='pemsd7-m', choices=['metr-la', 'pems-bay', 'pemsd7-m'])
+    parser.add_argument('--dataset', type=str, default='metr-la', choices=['metr-la', 'pems-bay', 'pemsd7-m'])
     parser.add_argument('--n_his', type=int, default=12)
     parser.add_argument('--n_pred', type=int, default=3,
                         help='the number of time interval for predcition, default as 3')
@@ -46,7 +45,7 @@ def get_parameters():
     parser.add_argument('--lr', type=float, default=0.001, help='learning rate')
     # parser.add_argument('--weight_decay_rate', type=float, default=0.0005, help='weight decay (L2 penalty)')
     parser.add_argument('--batch_size', type=int, default=32)
-    parser.add_argument('--epochs', type=int, default=10, help='epochs, default as 30')
+    parser.add_argument('--epochs', type=int, default=15, help='epochs, default as 30')
     # parser.add_argument('--opt', type=str, default='adam', help='optimizer, default as adam')
 
     # parser.add_argument('--step_size', type=int, default=10)
@@ -115,9 +114,9 @@ def data_prepare(args, device):
     '''
     # As described in the paper, the author seems not stating out the radio between validation and test set
     # So we assume the validation:test is 1:1
-    train_radio = 2
+    train_radio = 7
     val_radio = 1
-    test_radio = 1
+    test_radio = 2
 
     radio_sum = train_radio + val_radio + test_radio
 
@@ -130,11 +129,12 @@ def data_prepare(args, device):
     len_train = int(num_of_data - len_val - len_test)
 
     train, val, test = load_data(args.dataset, len_train, len_val)
-    zscore = StandardScaler()
+    zscore = StandardScaler(train)
 
-    train = zscore.fit_transform(train)
-    val = zscore.transform(val)
-    test = zscore.transform(test)
+    # shape of train/val/test [num_of_data, num_vertex, channel]
+    train = zscore.transform(train).float()
+    val = zscore.transform(val).float()
+    test = zscore.transform(test).float()
 
     x_train, y_train = data_transform(train, args.n_his, args.n_pred)
     x_val, y_val = data_transform(val, args.n_his, args.n_pred)
@@ -157,13 +157,17 @@ def data_prepare(args, device):
     return n_vertex, zscore, train_iter, val_iter, test_iter
 
 
-def prepare_model(args, blocks, n_vertex, device):
-    loss = nn.MSELoss()
+def prepare_model(args, blocks, n_vertex, device, zscore):
+    mean, std = zscore.data_info()
+    mean, std = mean.to(device), std.to(device)
+    loss = MAELoss(mean, std)
+
+    ckpt_name = 'Kt_' + str(args.Kt) + '_Ks_' + str(args.Ks) + '_ckpt.pth'
     model = STGCN(args, blocks, n_vertex).to(device)
 
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
 
-    return loss, model, optimizer
+    return loss, model, optimizer, ckpt_name
 
 
 def train(loss, args, optimizer, model, train_iter, val_iter, zscore):
@@ -174,7 +178,6 @@ def train(loss, args, optimizer, model, train_iter, val_iter, zscore):
     best_point = 10e5
     for epoch in range(args.epochs):
         l_sum = 0.0  # 'l_sum' is epoch sum loss, 'n' is epoch instance number
-        diff = []
         model.train()
         for batch_idx, (x, y) in enumerate(train_iter):
             y_pred = model(x)
@@ -185,28 +188,35 @@ def train(loss, args, optimizer, model, train_iter, val_iter, zscore):
             # l_sum += l.item() * y.shape[0]
             l_sum += l.item()
 
-            mae, mape, rmse = calc_metric(y, y_pred, zscore)
+            rmse, mae, mape = calc_metric(y, y_pred, zscore)
 
-            if batch_idx % 50 == 0:
+            if batch_idx % 5 == 0:
                 progress_bar(batch_idx, len(train_iter), 'Train loss: %.3f | mae, mape, rmse: %.3f, %.1f%%, %.3f'
                              % (l_sum / (batch_idx + 1), mae, mape, rmse))
 
         print()
-        val_loss, val_mae = evaluation(model, val_iter, zscore, args, type='validation')
-        nni.report_intermediate_result(val_mae)
+        val_loss, val_mae = evaluation(model, ckpt_name, 'model_dist', val_iter, zscore, args, type='validation')
+        print()
+        if args.enable_nni:
+            nni.report_intermediate_result(val_mae)
 
+        if val_mae < best_point:
+            best_point = val_mae
+            model_dist = model.state_dict()
+
+    test_loss, test_mae = evaluation(model, ckpt_name, model_dist, test_iter, zscore, args, type='test')
     if args.enable_nni:
-        test_loss, test_mae = evaluation(model, val_iter, zscore, args, type='test')
         nni.report_final_result(test_mae)
 
 
-def evaluation(model, iter, zscore, args, type, saved=True):
+def evaluation(model, ckpt_name, model_dist, iter, zscore, args, type, saved=True):
     model.eval()
     l_sum, mae_sum = 0.0, 0.0
 
     if type == 'test':
-        checkpoint = torch.load('./checkpoint/ckpt.pth', map_location='cpu')
-        model.load_state_dict(checkpoint['net'])
+        # load best model in train
+        model.load_state_dict(model_dist)
+        print('Test: best train model loaded')
 
     with torch.no_grad():
         for batch_idx, (x, y) in enumerate(iter):
@@ -215,22 +225,29 @@ def evaluation(model, iter, zscore, args, type, saved=True):
             # l_sum += l.item() * y.shape[0]
             l_sum += l.item()
 
-            mae, mape, rmse = calc_metric(y, y_pred, zscore)
+            rmse, mae, mape = calc_metric(y, y_pred, zscore)
             mae_sum += mae
-            if batch_idx % 50 == 0:
+            if batch_idx % 5 == 0:
                 progress_bar(batch_idx, len(iter), str(type) + ' loss: %.3f | mae, mape, rmse: %.3f, %.1f%%, %.3f'
                              % (l_sum / (batch_idx + 1), mae, mape, rmse))
         print()
-        val_loss_calc = mae_sum / len(iter)
-        try:
-            checkpoint = torch.load('./checkpoint/ckpt.pth')
-            val_loss = checkpoint['val_lost(mae)']
-            if val_loss_calc < val_loss:
-                save_model(args, model, val_loss_calc)
-        except:
-            save_model(args, model, val_loss)
+        val_mae = mae_sum / len(iter)
 
-    return l_sum / len(iter), val_loss_calc
+        if saved and type == 'test':
+            try:
+                checkpoint = torch.load('./checkpoint/' + ckpt_name)
+                val_loss = checkpoint['val_loss(mae)']
+                print('Found local model dist')
+                if val_mae < val_loss:
+                    print('Get better model, saving')
+                    save_model(args, model, val_mae)
+            except:
+                save_model(args, model, val_mae)
+                print('Local model dist not found, saving...')
+
+        print(str(type) + '_mae', val_mae)
+
+    return l_sum / len(iter), val_mae
 
 
 def save_model(args, model, val_loss):
@@ -242,6 +259,7 @@ def save_model(args, model, val_loss):
     if not os.path.isdir('checkpoint'):
         os.mkdir('checkpoint')
     torch.save(checkpoint, './checkpoint/ckpt.pth')
+    torch.save(checkpoint, './checkpoint/' + ckpt_name)
 
 
 if __name__ == '__main__':
@@ -250,7 +268,7 @@ if __name__ == '__main__':
 
     args, device, blocks = get_parameters()
     n_vertex, zscore, train_iter, val_iter, test_iter = data_prepare(args, device)
-    loss, model, optimizer = prepare_model(args, blocks, n_vertex, device)
+    loss, model, optimizer, ckpt_name = prepare_model(args, blocks, n_vertex, device)
 
     train(loss, args, optimizer, model, train_iter, val_iter, zscore)
     # test(zscore, loss, model, test_iter, args)
