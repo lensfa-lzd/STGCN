@@ -248,4 +248,7 @@ class OutputBlock(nn.Module):
         x = self.fc(x)
         x = torch.einsum('bvt->btv', x)
 
+        x = x.unsqueeze(dim=-1)
+        x = torch.einsum('btvc->bctv', x)
+
         return x

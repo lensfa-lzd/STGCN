@@ -33,7 +33,7 @@ def load_data(dataset_name, len_train, len_val):
     dataset_path = os.path.join(dataset_path, dataset_name)
 
     # shape of vel [num_of_data, num_vertex]
-    vel = pd.read_csv(os.path.join(dataset_path, 'vel.csv'))
+    vel = torch.load(os.path.join(dataset_path, 'vel.pth'))
 
     train = vel[: len_train]
     val = vel[len_train: len_train + len_val]
@@ -44,30 +44,26 @@ def load_data(dataset_name, len_train, len_val):
 def data_transform(data, n_his, n_pred):
     # produce data slices for x_data and y_data
 
-    # shape of data [num_of_data, num_vertex]
+    # shape of data [num_of_data, num_vertex, channel]
+    channel = data.shape[-1]
     n_vertex = data.shape[1]
-    len_record = len(data)
+    len_record = data.shape[0]
     num = len_record - n_his - n_pred
 
     # size of input/x is [batch_size, channel, n_time, n_vertex]
     # size of y/target [batch_size, n_pred, n_vertex]
-    x = np.zeros([num, 1, n_his, n_vertex])
-    y = np.zeros([num, n_pred, n_vertex])
-
-    # Origin
-    # y = np.zeros([num, n_vertex])
-    #
-    # for i in range(num):
-    #     head = i
-    #     tail = i + n_his
-    #     x[i, :, :, :] = data[head: tail].reshape(1, n_his, n_vertex)
-    #     y[i] = data[tail + n_pred - 1]
+    x = torch.zeros([num, n_his, n_vertex, channel])
+    y = torch.zeros([num, n_pred, n_vertex, channel])
 
     for i in range(num):
         head = i
         tail = i + n_his
-        x[i, :, :, :] = data[head: tail].reshape(1, n_his, n_vertex)
-        y[i, :, :] = data[tail: tail + n_pred]
+        x[i, :, :, :] = data[head: tail]
+        y[i, :, :, :] = data[tail: tail + n_pred]
 
-    # return torch.Tensor(x).to(device), torch.Tensor(y).to(device)
-    return torch.Tensor(x.astype(dtype=np.float32)), torch.Tensor(y.astype(dtype=np.float32))
+    x = torch.einsum('btvc->bctv', x).float()
+    y = torch.einsum('btvc->bctv', y).float()
+
+    # size of input/x is [batch_size, channel, n_time, n_vertex]
+    # size of y/target [batch_size, channel, n_time, n_vertex]
+    return x, y

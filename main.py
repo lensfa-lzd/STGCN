@@ -2,6 +2,7 @@ import argparse
 import logging
 import math
 import os
+import sys
 
 import nni
 import numpy as np
@@ -60,6 +61,8 @@ def get_parameters():
         parser.set_defaults(**RCV_CONFIG)
         args = parser.parse_args()
 
+    args.in_channel = args.out_channel = 1
+
     print('Training configs: {}'.format(args))
 
     # Running in Nvidia GPU (CUDA) or CPU
@@ -72,7 +75,7 @@ def get_parameters():
         device = torch.device('cpu')
 
     # blocks: settings of channel size in network in order
-    blocks = [[1]]
+    blocks = [[args.in_channel]]
     for _ in range(args.stblock_num):
         blocks.append([64, 16, 64])
 
@@ -104,7 +107,7 @@ def data_prepare(args, device):
     dataset_path = os.path.join(dataset_path, args.dataset)
 
     # shape of vel.csv(data) is [num_of_data, num_vertex]
-    num_of_data = pd.read_csv(os.path.join(dataset_path, 'vel.csv')).shape[0]
+    num_of_data = pd.read_hdf(os.path.join(dataset_path, 'time_index.h5')).shape[0]
 
     '''
         The time period used is from 1st
@@ -173,7 +176,7 @@ def prepare_model(args, blocks, n_vertex, device, zscore):
 def train(loss, args, optimizer, model, train_iter, val_iter, zscore):
     """
         size of x/input is [batch_size, channel, n_time, n_vertex]
-        size of y/output/target [batch_size, n_pred, n_vertex]
+        size of y/output/target [batch_size, channel, n_time, n_vertex]
     """
     best_point = 10e5
     for epoch in range(args.epochs):
@@ -268,7 +271,7 @@ if __name__ == '__main__':
 
     args, device, blocks = get_parameters()
     n_vertex, zscore, train_iter, val_iter, test_iter = data_prepare(args, device)
-    loss, model, optimizer, ckpt_name = prepare_model(args, blocks, n_vertex, device)
+    loss, model, optimizer, ckpt_name = prepare_model(args, blocks, n_vertex, device, zscore)
 
     train(loss, args, optimizer, model, train_iter, val_iter, zscore)
     # test(zscore, loss, model, test_iter, args)
