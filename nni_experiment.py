@@ -28,10 +28,12 @@ experiment.config.tuner.class_args['population_size'] = 36
 # ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 # Here we evaluate 10 sets of hyperparameters in total, and concurrently evaluate 2 sets at a time.
 experiment.config.max_trial_number = 100
-experiment.config.trial_concurrency = 4
+experiment.config.trial_concurrency = 2
 experiment.config.trial_gpu_number = 1
 
 experiment.config.training_service.use_active_gpu = True
+experiment.config.training_service.max_trial_number_per_gpu = 2
+experiment.config.training_service.gpu_indices = [0, 1]
 
 # %%
 # You may also set ``max_experiment_duration = '1h'`` to limit running time.
