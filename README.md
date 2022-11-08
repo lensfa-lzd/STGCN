@@ -21,7 +21,7 @@ So we conduct a hyperparameter optimization experiment that set the searching sp
 
 **Ks: [2, 3, 4]**
 
-and run on metr-la dataset, 12 his point to 3 pred point, 15 epoch per combination, 
+and run on **metr-la** dataset, 12 his point to 3 pred point, 15 epoch per combination, 
 7:1:2 train:val:test radio.
 
 After about 620 experiments, as shown in the following figure we select the top 1% result in 

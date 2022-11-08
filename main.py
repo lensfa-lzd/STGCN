@@ -239,7 +239,7 @@ def evaluation(model, ckpt_name, model_dist, iter, zscore, args, type, saved=Tru
         if saved and type == 'test':
             try:
                 checkpoint = torch.load('./checkpoint/' + ckpt_name)
-                val_loss = checkpoint['val_loss(mae)']
+                val_loss = checkpoint['loss(mae)']
                 print('Found local model dist')
                 if val_mae < val_loss:
                     print('Get better model, saving')
@@ -253,15 +253,14 @@ def evaluation(model, ckpt_name, model_dist, iter, zscore, args, type, saved=Tru
     return l_sum / len(iter), val_mae
 
 
-def save_model(args, model, val_loss):
+def save_model(args, model, loss):
     checkpoint = {
         'config_args': args,
         'net': model.state_dict(),
-        'val_loss(mae)': val_loss,
+        'loss(mae)': loss,
     }
     if not os.path.isdir('checkpoint'):
         os.mkdir('checkpoint')
-    torch.save(checkpoint, './checkpoint/ckpt.pth')
     torch.save(checkpoint, './checkpoint/' + ckpt_name)
 
 

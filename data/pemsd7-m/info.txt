@@ -1,3 +1,0 @@
-adj in pemsd7-m is weighted and added self-loop/self-connection
-
-shape of vel.csv(data) is [num_of_data, num_vertex]
