@@ -165,7 +165,8 @@ def prepare_model(args, blocks, n_vertex, device, zscore):
     mean, std = mean.to(device), std.to(device)
     loss = MAELoss(mean, std)
 
-    ckpt_name = 'Kt_' + str(args.Kt) + '_Ks_' + str(args.Ks) + '_ckpt.pth'
+    # ckpt_name = 'Kt_' + str(args.Kt) + '_Ks_' + str(args.Ks) + '_ckpt.pth'
+    ckpt_name = f'Kt_{args.Kt}_Ks_{args.Ks}_ckpt.pth'
     model = STGCN(args, blocks, n_vertex).to(device)
 
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
