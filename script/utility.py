@@ -3,7 +3,6 @@ import scipy.sparse as sp
 from scipy.sparse.linalg import eigsh
 import torch
 from einops import rearrange
-from script.metrics import Metrics
 
 
 def calc_gso(dir_adj, gso_type):
@@ -93,13 +92,14 @@ class MAELoss(torch.nn.Module):
         self.std = std
 
     def forward(self, x, y):
+        # print(x.shape, y.shape)
+        # print(self.mean, self.std)
+        # metro torch.Size([8, 2, 4, 80]) torch.Size([8, 2, 4, 80]) mean [2] std [2]
+        # road torch.Size([8, 1, 12, 325]) torch.Size([8, 1, 12, 325]) mean [1] std [1]
+        x, y = torch.einsum('bctv->btvc', x), torch.einsum('bctv->btvc', y)
         x = x * self.std + self.mean
         y = y * self.std + self.mean
         mae = torch.absolute(x-y)
-        # mae = torch.tensor([
-        #     self.calc_mae(x[:, i, :, :], y[:, i, :, :])
-        #     for i in range(x.shape[1])
-        # ], requires_grad=True)
         return torch.mean(mae)
 
     @staticmethod
@@ -115,19 +115,31 @@ class MAELoss(torch.nn.Module):
 class StandardScaler:
     """
         input/output shape [num_of_data, num_vertex, channel]
+        or [batch_size, channel, n_time, n_vertex]
     """
     def __init__(self, fit_data):
-        # shape of fit_data [num_of_data, num_vertex, channel]
+        if len(fit_data.shape) != 3:
+            # shape of fit_data [num_of_data, num_vertex, channel]
+            fit_data = rearrange(fit_data, 'd t v c -> (d t) v c')
+
         fit_data = rearrange(fit_data, 't v c -> (t v) c')
         self.mean = torch.mean(fit_data, dim=0)
         self.std = torch.std(fit_data, dim=0)
 
     def transform(self, x):
-        # shape of fit_data [num_of_data, num_vertex, channel]
-        v = x.shape[1]
-        x = rearrange(x, 't v c -> (t v) c')
-        x = (x-self.mean)/self.std
-        return rearrange(x, '(t v) c -> t v c', v=v).float()
+        if len(x.shape) == 3:
+            # shape of fit_data [num_of_data, num_vertex, channel]
+            v = x.shape[1]
+            x = rearrange(x, 't v c -> (t v) c')
+            x = (x-self.mean)/self.std
+            return rearrange(x, '(t v) c -> t v c', v=v).float()
+        else:
+            # for metro data [day, n_time, n_vertex, channel]
+            v = x.shape[-2]
+            batch_size = x.shape[0]
+            x = rearrange(x, 'd t v c -> (d t v) c')
+            x = (x - self.mean) / self.std
+            return rearrange(x, '(d t v) c -> d t v c', d=batch_size, v=v).float()
 
     def inverse_transform(self, x):
         if len(x.shape) == 3:
@@ -146,3 +158,45 @@ class StandardScaler:
 
     def data_info(self):
         return self.mean, self.std
+
+
+class Metrics(object):
+    """
+        masked version error functions partly base on PVCGN
+        https://github.com/HCPLab-SYSU/PVCGN
+
+        size of output is [batch_size, channel, n_time, n_vertex]
+        size of target [batch_size, channel, n_pred, n_vertex]
+        thus axis 1 is "channel"
+    """
+    def __init__(self, target, output):
+        self.target = target
+        self.output = output
+
+        # zero value might be slightly change due to Z-score norm
+        self.mask = target < 10e-5
+
+    def mse(self):
+        mse = torch.square(self.target - self.output)
+        mse[self.mask] = 0
+        return torch.mean(mse)
+
+    def rmse(self):
+        return torch.sqrt(self.mse())
+
+    def mae(self):
+        mae = torch.absolute(self.target - self.output)
+        mae[self.mask] = 0
+        return torch.mean(mae)
+
+    def mape(self):
+        mape = torch.absolute((self.target - self.output)/self.target)
+        mape[self.mask] = 0
+        return torch.mean(mape * 100)
+
+    def all(self):
+        rmse = self.rmse().item()
+        mae = self.mae().item()
+        mape = self.mape().item()
+
+        return rmse, mae, mape

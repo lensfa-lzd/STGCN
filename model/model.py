@@ -25,20 +25,24 @@ class STGCN(nn.Module):
         super(STGCN, self).__init__()
         modules = []
 
-        # block ([1], [64, 16, 64], [64, 16, 64], [args.CTO, args.n_pred])
+        self.in_channel = args.in_channel
+        # block ([1], [64, 16, 64], ... ,[64, 16, 64], [args.CTO, args.n_pred])
         # 2 STConvBlock in Network
-        for l in range(2):
+        for l in range(args.stblock_num):
             # STConvBlock(Kt, Ks, n_vertex, last_block_channel, channels, graph_conv_type, gso)
             modules.append(layers.STConvBlock(args.Kt, args.Ks, n_vertex, blocks[l][-1], blocks[l + 1],
                                               args.graph_conv_type, args.gso))
         self.st_blocks = nn.Sequential(*modules)
 
         # OutputBlock(Kt, last_block_channel, channels, n_vertex, n_time_final):
-        self.output_layer = layers.OutputBlock(args.Kt, blocks[2][-1], blocks[3], n_vertex, args.n_his)
+        self.output_layer = layers.OutputBlock(args.Kt, blocks[-2][-1], blocks[-1], n_vertex, args.n_his,
+                                               args.out_channel)
 
     def forward(self, x):
         # size of input/x is [batch_size, channel, n_time, n_vertex]
         # size of y/target [batch_size, n_pred, n_vertex]
+        x = x[:, :self.in_channel, :, :]
+
         x = self.st_blocks(x)
         x = self.output_layer(x)
 

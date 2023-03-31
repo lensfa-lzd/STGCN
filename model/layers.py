@@ -5,6 +5,8 @@ import torch.nn as nn
 import torch.nn.init as init
 import torch.nn.functional as F
 
+from einops import repeat, rearrange
+
 
 class TemporalConvLayer(nn.Module):
     '''
@@ -229,26 +231,17 @@ class OutputBlock(nn.Module):
         CTO: Channel of Temporal conv in the Output layer
     '''
 
-    def __init__(self, Kt, last_block_channel, channels, n_vertex, n_time):
+    def __init__(self, Kt, last_block_channel, channels, n_vertex, n_time, out_channel):
         super(OutputBlock, self).__init__()
         self.tmp_conv = TemporalConvLayer(Kt, last_block_channel, channels[0], n_vertex)
-        self.fc = nn.Linear(in_features=channels[0]*n_time, out_features=channels[1])
+        self.fc = nn.Linear(in_features=channels[0] * n_time, out_features=channels[1] * out_channel)
+
+        self.out_channel = out_channel
 
     def forward(self, x):
         x = self.tmp_conv(x)
-
-        batch_size = x.shape[0]
-        n_vertex = x.shape[3]
-
-        # [batch_size, channel, n_time, n_vertex] -> [batch_size, n_vertex, n_time, channel]
-        # -> [batch_size, n_vertex, n_time*channel] -> [batch_size, n_vertex, n_pred]
-        # -> [batch_size, n_pred, n_vertex]
-        x = torch.einsum('bctv->bvtc', x)
-        x = x.reshape([batch_size, n_vertex, -1])
+        x = rearrange(x, 'b c t v -> b v (c t)')
         x = self.fc(x)
-        x = torch.einsum('bvt->btv', x)
-
-        x = x.unsqueeze(dim=-1)
-        x = torch.einsum('btvc->bctv', x)
+        x = rearrange(x, 'b v (c t) -> b c t v', c=self.out_channel)
 
         return x
